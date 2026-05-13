@@ -8,7 +8,7 @@ REPO = "eartinityop/compress"
 WF_FILE = "compress.yml"
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 CHANNEL_USERNAME = "compresslog"
-BOT_USERNAME = "Eartinityvidcomp_bot"   # without @
+BOT_USERNAME = "Testeartinity_bot"   # without @
 # =====================================
 
 RUN_IDS = {}

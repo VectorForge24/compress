@@ -1,7 +1,7 @@
 # ---- Build stage ----
 FROM debian:bookworm-slim AS builder
 
-# Install build tools and dependencies for compilation
+# Install build tools, dependencies, and CA certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     make \
@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     zlib1g-dev \
     libc-ares-dev \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Clone and compile the Telegram Bot API server
@@ -23,7 +24,7 @@ RUN git clone --depth 1 https://github.com/tdlib/telegram-bot-api.git && \
 # ---- Runtime stage ----
 FROM debian:bookworm-slim
 
-# Install only runtime dependencies + ffmpeg
+# Install only runtime dependencies + ffmpeg + Python
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libssl-dev \
@@ -31,12 +32,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libc-ares-dev \
     python3 \
     python3-pip \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the compiled binary from builder
 COPY --from=builder /usr/local/bin/telegram-bot-api /usr/local/bin/telegram-bot-api
 
-# Install Python packages (use a requirements file that includes only what’s needed)
+# Install Python packages
 COPY requirements.txt .
 RUN pip3 install --break-system-packages -r requirements.txt
 

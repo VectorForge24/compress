@@ -1,4 +1,4 @@
-import os, requests, threading, httpx
+import os, requests, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -9,23 +9,18 @@ WF_FILE = "compress.yml"
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 # =====================================
 
-# The public base URL of this service (Render will provide it)
+# The public base URL of this service (Render provides RENDER_EXTERNAL_URL)
 SERVICE_URL = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:8000")
-BOT_API_LOCAL = "http://localhost:8081"   # the internal API server
+BOT_API_LOCAL = "http://localhost:8081"   # internal Telegram Bot API server
 BASE_URL = f"{SERVICE_URL}/bot"
 
-RUN_IDS = {}
-
-# ---------- Reverse proxy health server ----------
-import urllib.parse
-
+# ---------- Reverse proxy + health server ----------
 class ProxyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/bot") or self.path.startswith("/file"):
-            # Forward request to local API server
             self.proxy_request("GET")
         else:
-            # Health check
+            # Health check for Render
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"OK")
@@ -39,18 +34,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def proxy_request(self, method):
         url = BOT_API_LOCAL + self.path
-        if self.headers.get('Content-Type'):
-            content_type = self.headers['Content-Type']
-            if 'multipart/form-data' in content_type:
-                # For file uploads, we need to forward the raw body
-                body = self.rfile.read(int(self.headers['Content-Length']))
-                resp = requests.request(method, url, data=body, headers={'Content-Type': content_type})
-            else:
-                body = self.rfile.read(int(self.headers['Content-Length'])) if self.headers.get('Content-Length') else None
-                resp = requests.request(method, url, data=body, headers=dict(self.headers))
-        else:
-            body = self.rfile.read(int(self.headers['Content-Length'])) if self.headers.get('Content-Length') else None
-            resp = requests.request(method, url, data=body, headers=dict(self.headers))
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length) if content_length > 0 else None
+
+        # Forward headers (except Host)
+        headers = {k: v for k, v in self.headers.items() if k.lower() != 'host'}
+        resp = requests.request(method, url, data=body, headers=headers)
+
         self.send_response(resp.status_code)
         for k, v in resp.headers.items():
             self.send_header(k, v)
@@ -69,10 +59,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def video_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Capture original caption
+    # Save original caption and message info
     context.user_data["original_caption"] = update.message.caption or ""
-    # Store file_id directly (no forwarding)
     video = update.message.video
+    if not video:
+        await update.message.reply_text("Please send a video file.")
+        return
     context.user_data["file_id"] = video.file_id
     context.user_data["user_id"] = update.message.chat_id
     context.user_data["original_msg_id"] = update.message.message_id
@@ -91,6 +83,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
+    # Cancel a running workflow (callback_data = "cancel_run_<run_id>")
     if data.startswith("cancel_run_"):
         run_id = data.split("_", 2)[2]
         url = f"https://api.github.com/repos/{REPO}/actions/runs/{run_id}/cancel"
@@ -106,10 +99,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Cancellation failed: {error_msg}")
         return
 
+    # Cancel before triggering workflow
     if data == "cancel":
         await query.edit_message_text("❌ Process cancelled.")
         return
 
+    # Show quality options
     if data == "compress":
         keyboard = [
             [InlineKeyboardButton("240p", callback_data="quality_240"),
@@ -125,6 +120,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Quality selected → trigger workflow
     if data.startswith("quality_"):
         quality = data.split("_")[1]
         file_id = context.user_data.get("file_id")
@@ -136,15 +132,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Error: Missing video info.")
             return
 
-        cancel_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Cancel ❌", callback_data="cancel_pending")]
-        ])
-        await query.edit_message_text(
-            "⏳ Triggering workflow...",
-            reply_markup=cancel_keyboard
-        )
+        # Edit the message to show "Triggering workflow..." (keyboard will be added by the workflow)
+        await query.edit_message_text("⏳ Triggering workflow...")
         progress_msg_id = query.message.message_id
 
+        # Trigger the GitHub workflow
         url = f"https://api.github.com/repos/{REPO}/actions/workflows/{WF_FILE}/dispatches"
         headers = {
             "Authorization": f"token {GITHUB_TOKEN}",
@@ -159,28 +151,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "message_id": str(progress_msg_id),
                 "original_message_id": str(original_msg_id),
                 "original_caption": original_caption,
-                "api_base_url": BASE_URL      # pass the bot API base URL
+                "api_base_url": BASE_URL
             }
         }
         resp = requests.post(url, json=payload, headers=headers)
         if resp.status_code != 204:
             await query.edit_message_text(f"❌ Workflow trigger failed: {resp.status_code} {resp.text}")
-            return
-
-        runs_url = f"https://api.github.com/repos/{REPO}/actions/runs?event=workflow_dispatch&per_page=1"
-        runs_resp = requests.get(runs_url, headers=headers)
-        run_id = None
-        if runs_resp.status_code == 200:
-            runs_data = runs_resp.json()
-            if runs_data["total_count"] > 0:
-                run_id = runs_data["workflow_runs"][0]["id"]
-
-        if run_id:
-            RUN_IDS[(user_id, progress_msg_id)] = run_id
-            new_keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Cancel ❌", callback_data=f"cancel_run_{run_id}")]
-            ])
-            await query.edit_message_reply_markup(reply_markup=new_keyboard)
+        return
 
     elif data == "cancel_q":
         await query.edit_message_text("❌ Compression cancelled.")
@@ -196,5 +173,5 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    start_proxy_server()   # reverse proxy + health check
+    start_proxy_server()   # starts the reverse proxy (also handles health checks)
     main()

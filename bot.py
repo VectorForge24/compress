@@ -1,4 +1,4 @@
-import os, requests, threading
+import os, requests, threading, httpx
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -7,22 +7,59 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 REPO = "eartinityop/compress"
 WF_FILE = "compress.yml"
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
-CHANNEL_USERNAME = "compresslog"
-BOT_USERNAME = "Testeartinity_bot"   # without @
 # =====================================
+
+# The public base URL of this service (Render will provide it)
+SERVICE_URL = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:8000")
+BOT_API_LOCAL = "http://localhost:8081"   # the internal API server
+BASE_URL = f"{SERVICE_URL}/bot"
 
 RUN_IDS = {}
 
-# ---------- Health server for Render ----------
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
+# ---------- Reverse proxy health server ----------
+import urllib.parse
 
-def start_health_server():
+class ProxyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith("/bot") or self.path.startswith("/file"):
+            # Forward request to local API server
+            self.proxy_request("GET")
+        else:
+            # Health check
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+    def do_POST(self):
+        if self.path.startswith("/bot") or self.path.startswith("/file"):
+            self.proxy_request("POST")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def proxy_request(self, method):
+        url = BOT_API_LOCAL + self.path
+        if self.headers.get('Content-Type'):
+            content_type = self.headers['Content-Type']
+            if 'multipart/form-data' in content_type:
+                # For file uploads, we need to forward the raw body
+                body = self.rfile.read(int(self.headers['Content-Length']))
+                resp = requests.request(method, url, data=body, headers={'Content-Type': content_type})
+            else:
+                body = self.rfile.read(int(self.headers['Content-Length'])) if self.headers.get('Content-Length') else None
+                resp = requests.request(method, url, data=body, headers=dict(self.headers))
+        else:
+            body = self.rfile.read(int(self.headers['Content-Length'])) if self.headers.get('Content-Length') else None
+            resp = requests.request(method, url, data=body, headers=dict(self.headers))
+        self.send_response(resp.status_code)
+        for k, v in resp.headers.items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(resp.content)
+
+def start_proxy_server():
     port = int(os.environ.get("PORT", 8000))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server = HTTPServer(("0.0.0.0", port), ProxyHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 # -----------------------------------------------
 
@@ -32,10 +69,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def video_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["original_msg_id"] = update.message.message_id
-    forwarded = await update.message.forward(f"@{CHANNEL_USERNAME}")
-    context.user_data["fwd_msg_id"] = forwarded.message_id
+    # Capture original caption
+    context.user_data["original_caption"] = update.message.caption or ""
+    # Store file_id directly (no forwarding)
+    video = update.message.video
+    context.user_data["file_id"] = video.file_id
     context.user_data["user_id"] = update.message.chat_id
+    context.user_data["original_msg_id"] = update.message.message_id
 
     keyboard = [
         [InlineKeyboardButton("Compress this video ✅", callback_data="compress")],
@@ -87,11 +127,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("quality_"):
         quality = data.split("_")[1]
-        fwd_msg_id = context.user_data.get("fwd_msg_id")
+        file_id = context.user_data.get("file_id")
         user_id = context.user_data.get("user_id")
         original_msg_id = context.user_data.get("original_msg_id")
+        original_caption = context.user_data.get("original_caption", "")
 
-        if not fwd_msg_id or not user_id or not original_msg_id:
+        if not file_id or not user_id or not original_msg_id:
             await query.edit_message_text("Error: Missing video info.")
             return
 
@@ -112,13 +153,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         payload = {
             "ref": "main",
             "inputs": {
-                "channel_username": str(CHANNEL_USERNAME),
-                "fwd_message_id": str(fwd_msg_id),
+                "file_id": file_id,
                 "user_id": str(user_id),
                 "quality": quality,
                 "message_id": str(progress_msg_id),
                 "original_message_id": str(original_msg_id),
-                "bot_username": BOT_USERNAME       # <-- username for upload
+                "original_caption": original_caption,
+                "api_base_url": BASE_URL      # pass the bot API base URL
             }
         }
         resp = requests.post(url, json=payload, headers=headers)
@@ -145,24 +186,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Compression cancelled.")
 
 async def post_init(application: Application):
-    me = await application.bot.get_me()
-    print(f"Bot started as @{me.username}")
-
-async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        msg = await context.bot.send_message(chat_id=f"@{CHANNEL_USERNAME}", text="Bot is alive!")
-        await update.message.reply_text(f"✅ Message sent to channel: {msg.message_id}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+    print(f"Bot started. API base URL: {BASE_URL}")
 
 def main():
-    app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).post_init(post_init).build()
+    app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).base_url(BASE_URL).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("test", test))
     app.add_handler(MessageHandler(filters.VIDEO, video_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.run_polling()
 
 if __name__ == "__main__":
-    start_health_server()
+    start_proxy_server()   # reverse proxy + health check
     main()

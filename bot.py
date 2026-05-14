@@ -2,6 +2,10 @@ import os, requests, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.request import HTTPXRequest
+
+# Increase timeout and use a custom request instance
+request = HTTPXRequest(timeout=30.0, read_timeout=60.0, write_timeout=20.0)
 
 # ========== CONFIGURE THESE ==========
 REPO = "eartinityop/compress"
@@ -167,6 +171,7 @@ def main():
     # Use local API server for bot's own requests (no proxy loop / timeout)
     app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]) \
         .base_url("http://localhost:8081") \
+        .request(request) \
         .post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.VIDEO, video_handler))

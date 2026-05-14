@@ -2,10 +2,6 @@ import os, requests, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telegram.request import HTTPXRequest
-
-# Increase timeout and use a custom request instance
-request = HTTPXRequest(timeout=30.0, read_timeout=60.0, write_timeout=20.0)
 
 # ========== CONFIGURE THESE ==========
 REPO = "eartinityop/compress"
@@ -13,20 +9,20 @@ WF_FILE = "compress.yml"
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 # =====================================
 
-# Public base URL (for workflow API calls) – provided by Render
+# Public URL for the workflow – the Render service's public address + /bot
 SERVICE_URL = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:8000")
 BASE_URL = f"{SERVICE_URL}/bot"
 
-# Local Bot API server (internal, no proxy loop)
+# Internal Bot API server (used only by the proxy, not by the bot itself)
 BOT_API_LOCAL = "http://localhost:8081"
 
-# ---------- Reverse proxy + health server ----------
+# ---------- Reverse proxy server (for workflow calls) ----------
 class ProxyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/bot") or self.path.startswith("/file"):
             self.proxy_request("GET")
         else:
-            # Health check for Render
+            # Render health check
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"OK")
@@ -54,7 +50,7 @@ def start_proxy_server():
     port = int(os.environ.get("PORT", 8000))
     server = HTTPServer(("0.0.0.0", port), ProxyHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-# -----------------------------------------------
+# ----------------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -62,7 +58,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def video_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Save original caption and message info
     context.user_data["original_caption"] = update.message.caption or ""
     video = update.message.video
     if not video:
@@ -86,7 +81,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    # Cancel a running workflow (callback_data = "cancel_run_<run_id>")
     if data.startswith("cancel_run_"):
         run_id = data.split("_", 2)[2]
         url = f"https://api.github.com/repos/{REPO}/actions/runs/{run_id}/cancel"
@@ -102,12 +96,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Cancellation failed: {error_msg}")
         return
 
-    # Cancel before triggering workflow
     if data == "cancel":
         await query.edit_message_text("❌ Process cancelled.")
         return
 
-    # Show quality options
     if data == "compress":
         keyboard = [
             [InlineKeyboardButton("240p", callback_data="quality_240"),
@@ -123,7 +115,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Quality selected → trigger workflow
     if data.startswith("quality_"):
         quality = data.split("_")[1]
         file_id = context.user_data.get("file_id")
@@ -135,7 +126,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Error: Missing video info.")
             return
 
-        # Edit the message to show "Triggering workflow..."
         await query.edit_message_text("⏳ Triggering workflow...")
         progress_msg_id = query.message.message_id
 
@@ -153,7 +143,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "message_id": str(progress_msg_id),
                 "original_message_id": str(original_msg_id),
                 "original_caption": original_caption,
-                "api_base_url": BASE_URL   # workflow uses the public URL
+                "api_base_url": BASE_URL   # workflow will use the local server via this public URL
             }
         }
         resp = requests.post(url, json=payload, headers=headers)
@@ -165,19 +155,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Compression cancelled.")
 
 async def post_init(application: Application):
-    print(f"Bot started. API base URL: {BASE_URL}")
+    print(f"Bot started. Workflow API base URL: {BASE_URL}")
 
 def main():
-    # Use local API server for bot's own requests (no proxy loop / timeout)
-    app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]) \
-        .base_url("http://localhost:8081") \
-        .request(request) \
-        .post_init(post_init).build()
+    # Bot uses the standard public Telegram API – no local server needed for polling
+    app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.VIDEO, video_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.run_polling()
 
 if __name__ == "__main__":
-    start_proxy_server()   # starts the reverse proxy (handles workflow calls & health checks)
+    start_proxy_server()   # proxy for workflow calls (unlimited downloads etc.)
     main()

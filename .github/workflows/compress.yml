@@ -1,29 +1,29 @@
-name: Video Compressor (Cancel Anywhere + Fallback)
+name: Video Compressor (Hybrid – Local API + Fallback Bot)
 
 on:
   workflow_dispatch:
     inputs:
       file_id:
-        description: 'Telegram file_id'
+        description: 'Telegram file_id of the video'
         required: true
       user_id:
         description: 'User chat ID'
         required: true
       quality:
-        description: 'Target height'
+        description: 'Target height (240/360/480/720/1080)'
         required: true
       message_id:
-        description: 'Progress message ID'
+        description: 'Progress message ID to update'
         required: true
       original_message_id:
-        description: 'Original video message ID'
+        description: 'Original video message ID (for reply)'
         required: true
       original_caption:
         description: 'Original video caption'
         required: false
         default: ''
       api_base_url:
-        description: 'Local Bot API base URL'
+        description: 'Local Bot API base URL (e.g., https://your-service.onrender.com/bot)'
         required: true
 
 jobs:
@@ -41,7 +41,10 @@ jobs:
 
     steps:
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg jq bc
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg jq bc python3-pip
+
+      - name: Install Python packages
+        run: pip install pyrogram tgcrypto requests
 
       - name: Create output directory
         run: mkdir -p compress
@@ -60,19 +63,24 @@ jobs:
             -d "text=${MESSAGE}" -d "parse_mode=Markdown" \
             -d "reply_markup=${CANCEL_KEYBOARD}"
 
-      # ---------- Download with progress + cancel button ----------
-      - name: Download video
+      # ---------- Download with debug + progress + cancel ----------
+      - name: Download video from local API (debug)
         id: download
         run: |
           CANCEL_KEYBOARD='{"inline_keyboard":[[{"text":"Cancel ❌","callback_data":"cancel_run_${{ github.run_id }}"}}]]}'
-          FILE_PATH=$(curl -s "${API_BASE_URL}/getFile?file_id=${{ github.event.inputs.file_id }}" | jq -r '.result.file_path')
-          if [ -z "$FILE_PATH" ]; then
+          # Fetch file path from local API
+          API_RESPONSE=$(curl -s "${API_BASE_URL}/getFile?file_id=${{ github.event.inputs.file_id }}")
+          echo "getFile response: $API_RESPONSE"
+          FILE_PATH=$(echo "$API_RESPONSE" | jq -r '.result.file_path')
+          if [ -z "$FILE_PATH" ] || [ "$FILE_PATH" = "null" ]; then
+            ERROR_DESC=$(echo "$API_RESPONSE" | jq -r '.description // "Unknown error"')
             curl -s -X POST "${API_BASE_URL}/editMessageText" \
               -d "chat_id=${USER_CHAT_ID}" -d "message_id=${MSG_ID}" \
-              -d "text=❌ *Failed to get file path.*" -d "parse_mode=Markdown" \
+              -d "text=❌ *Failed to get file path:* ${ERROR_DESC}" -d "parse_mode=Markdown" \
               -d "reply_markup=${CANCEL_KEYBOARD}"
             exit 1
           fi
+
           OUTPUT="compress/original.mp4"
           curl -# -L -o "${OUTPUT}" "${API_BASE_URL}/file/${FILE_PATH}" 2>/tmp/download_progress.txt &
           CURL_PID=$!
@@ -121,6 +129,7 @@ jobs:
       - name: Handle download failure
         if: failure()
         run: |
+          CANCEL_KEYBOARD='{"inline_keyboard":[[{"text":"Cancel ❌","callback_data":"cancel_run_${{ github.run_id }}"}}]]}'
           curl -s -X POST "${API_BASE_URL}/editMessageText" \
             -d "chat_id=${USER_CHAT_ID}" -d "message_id=${MSG_ID}" \
             -d "text=❌ *Download failed. Process stopped.*" -d "parse_mode=Markdown" \
@@ -128,13 +137,14 @@ jobs:
           exit 1
 
       # ---------- Verify file ----------
-      - name: Verify file
+      - name: Verify downloaded file exists
+        id: verify
         run: |
           CANCEL_KEYBOARD='{"inline_keyboard":[[{"text":"Cancel ❌","callback_data":"cancel_run_${{ github.run_id }}"}}]]}'
           if [ ! -f compress/original.mp4 ]; then
             curl -s -X POST "${API_BASE_URL}/editMessageText" \
               -d "chat_id=${USER_CHAT_ID}" -d "message_id=${MSG_ID}" \
-              -d "text=❌ *Verification failed.*" -d "parse_mode=Markdown" \
+              -d "text=❌ *Verification failed: original.mp4 not found.*" -d "parse_mode=Markdown" \
               -d "reply_markup=${CANCEL_KEYBOARD}"
             exit 1
           else
@@ -145,8 +155,12 @@ jobs:
               -d "reply_markup=${CANCEL_KEYBOARD}"
           fi
 
-      # ---------- Compress with progress + cancel ----------
-      - name: Compress video
+      - name: Handle verification failure
+        if: failure() && steps.verify.outcome == 'failure'
+        run: exit 1
+
+      # ---------- Compression + rename ----------
+      - name: Compress and rename video
         id: compress
         run: |
           CANCEL_KEYBOARD='{"inline_keyboard":[[{"text":"Cancel ❌","callback_data":"cancel_run_${{ github.run_id }}"}}]]}'
@@ -155,6 +169,7 @@ jobs:
             -d "chat_id=${USER_CHAT_ID}" -d "message_id=${MSG_ID}" \
             -d "text=🎞 *Compressing to ${QUALITY}p...*" -d "parse_mode=Markdown" \
             -d "reply_markup=${CANCEL_KEYBOARD}"
+
           if ffmpeg -y -i compress/original.mp4 -vf "scale=-2:${QUALITY}" \
              -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k \
              compress/compressed.mp4 2>/tmp/ffmpeg.log; then
@@ -182,6 +197,10 @@ jobs:
             exit 1
           fi
 
+      - name: Handle compression failure
+        if: failure() && steps.compress.outcome == 'failure'
+        run: exit 1
+
       # ---------- Upload artifact ----------
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -191,7 +210,7 @@ jobs:
           retention-days: 7
 
       # ---------- Upload to Telegram with fallback bot ----------
-      - name: Upload via channel + copy (fallback bot)
+      - name: Upload via channel copy (fallback bot)
         id: upload
         env:
           COMPRESSED_NAME: ${{ env.COMPRESSED_NAME }}
@@ -215,7 +234,7 @@ jobs:
           SECS=$(( ELAPSED % 60 ))
           CAPTION="Quality: ${QUALITY}p | Time taken: ${MINS}m ${SECS}s"
 
-          # 1. Send to channel (primary bot)
+          # 1. Send to channel using primary bot
           CHANNEL_RESP=$(curl -s -o /tmp/channel_send.json -w "%{http_code}" \
             -F "video=@${FILE}" \
             -F "caption=${CAPTION}" \
@@ -277,6 +296,7 @@ jobs:
       - name: Handle upload failure
         if: failure()
         run: |
+          CANCEL_KEYBOARD='{"inline_keyboard":[[{"text":"Cancel ❌","callback_data":"cancel_run_${{ github.run_id }}"}}]]}'
           curl -s -X POST "${API_BASE_URL}/editMessageText" \
             -d "chat_id=${USER_CHAT_ID}" -d "message_id=${MSG_ID}" \
             -d "text=❌ *Upload failed.*" -d "parse_mode=Markdown" \

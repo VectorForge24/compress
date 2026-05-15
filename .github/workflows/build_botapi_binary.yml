@@ -1,9 +1,7 @@
 name: Build Telegram Bot API Binary
 
 on:
-  workflow_dispatch:          # manual trigger
-  schedule:
-    - cron: '0 0 1 * *'       # monthly auto-rebuild (optional)
+  workflow_dispatch:          # you can trigger this manually from the Actions tab
 
 jobs:
   build:
@@ -14,9 +12,9 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y git cmake g++ libssl-dev zlib1g-dev libc-ares-dev
 
-      - name: Clone & compile
+      - name: Clone & compile (with submodules)
         run: |
-          git clone --depth 1 https://github.com/tdlib/telegram-bot-api.git
+          git clone --depth 1 --recurse-submodules https://github.com/tdlib/telegram-bot-api.git
           cd telegram-bot-api
           mkdir build && cd build
           cmake -DCMAKE_BUILD_TYPE=Release ..

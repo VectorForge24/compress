@@ -11,7 +11,7 @@ GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 CHANNEL_USERNAME = "compresslog"
 BOT_USERNAME = "Eartinityvidcomp_bot"
 
-# Health server for Render
+# ---------- Health server for Render ----------
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -22,14 +22,16 @@ def start_health_server():
     port = int(os.environ.get("PORT", 8000))
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+# -----------------------------------------------
 
-# Bot handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("I am Eartinity's personal video compressor bot👋👋.\nSend me a video to get started.")
+    await update.message.reply_text(
+        "I am Eartinity's personal video compressor bot👋👋.\nSend me a video to get started."
+    )
 
 async def video_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    original_caption = update.message.caption or ""
-    context.user_data["original_caption"] = original_caption
+    # Capture original caption
+    context.user_data["original_caption"] = update.message.caption or ""
     context.user_data["original_msg_id"] = update.message.message_id
     forwarded = await update.message.forward(f"@{CHANNEL_USERNAME}")
     context.user_data["fwd_msg_id"] = forwarded.message_id
@@ -39,7 +41,10 @@ async def video_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("Compress this video ✅", callback_data="compress")],
         [InlineKeyboardButton("Cancel the process ❌", callback_data="cancel")]
     ]
-    await update.message.reply_text("Video received. What would you like to do?", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(
+        "Video received. What would you like to do?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -80,6 +85,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fwd_msg_id = context.user_data.get("fwd_msg_id")
         user_id = context.user_data.get("user_id")
         original_msg_id = context.user_data.get("original_msg_id")
+        original_caption = context.user_data.get("original_caption", "")
 
         if not fwd_msg_id or not user_id or not original_msg_id:
             await query.edit_message_text("Error: Missing video info.")
@@ -99,7 +105,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "quality": quality,
                 "message_id": str(progress_msg_id),
                 "original_message_id": str(original_msg_id),
-                "bot_username": BOT_USERNAME
+                "bot_username": BOT_USERNAME,
+                "original_caption": original_caption
             }
         }
         resp = requests.post(url, json=payload, headers=headers)

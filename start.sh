@@ -1,23 +1,22 @@
 #!/bin/bash
 
-echo "Starting local Bot API server..."
-telegram-bot-api --api-id ${TELEGRAM_API_ID} --api-hash ${TELEGRAM_API_HASH} \
+# Download pre-compiled telegram-bot-api binary if not present
+if [ ! -f ./telegram-bot-api ]; then
+    echo "Downloading telegram-bot-api binary..."
+    wget -q -O telegram-bot-api "https://github.com/jakbin/telegram-bot-api-binary/releases/download/2026-03-19glibc236/telegram-bot-api"
+    chmod +x telegram-bot-api
+fi
+
+# Start the local API server in background
+./telegram-bot-api --api-id ${TELEGRAM_API_ID} --api-hash ${TELEGRAM_API_HASH} \
     --http-port 8081 --http-ip-address "0.0.0.0" --dir /tmp/telegram-bot-api --local &
 BOTAPI_PID=$!
 
-# Wait a bit for the server to start, but don't block forever
-echo "Waiting up to 10 seconds for local API server..."
-for i in $(seq 1 10); do
-    if curl -s http://127.0.0.1:8081/getMe | grep -q '"ok":true'; then
-        echo "Local Bot API server is ready."
-        break
-    fi
-    sleep 1
-done
+# Wait briefly for it to start
+sleep 3
 
-# Even if the local server isn't ready, we still start the bot
-echo "Starting Python bot..."
+# Start the Python bot
 python bot.py
 
-# If the bot exits, stop the local API server (if it's running)
+# When bot stops, terminate the API server
 kill $BOTAPI_PID 2>/dev/null

@@ -54,6 +54,8 @@ jobs:
 
       # ---------- Runner specs ----------
       - name: Update Telegram with runner specs
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           jq -n \
             --arg chat_id "$USER_CHAT_ID" \
@@ -162,6 +164,8 @@ jobs:
       # ---------- Verify file ----------
       - name: Verify downloaded file exists
         id: verify
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           if [ ! -f compress/original.mp4 ]; then
             jq -n --arg chat_id "$USER_CHAT_ID" --arg msg_id "$MSG_ID" --arg text "❌ *Verification failed: original.mp4 not found.*" --arg rid "$GITHUB_RUN_ID" \
@@ -180,6 +184,8 @@ jobs:
       # ---------- Compression ----------
       - name: Compress video
         id: compress
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           echo "COMPRESS_START=$(date +%s)" >> $GITHUB_ENV
           jq -n --arg chat_id "$USER_CHAT_ID" --arg msg_id "$MSG_ID" --arg text "🎞 *Compressing to ${QUALITY}p...*" --arg rid "$GITHUB_RUN_ID" \

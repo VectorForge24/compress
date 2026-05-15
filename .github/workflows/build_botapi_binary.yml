@@ -10,7 +10,7 @@ jobs:
       contents: write
     steps:
       - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y git cmake g++ libssl-dev zlib1g-dev libc-ares-dev
+        run: sudo apt-get update && sudo apt-get install -y git cmake g++ libssl-dev zlib1g-dev libc-ares-dev gperf
 
       - name: Clone & compile (with submodules)
         run: |

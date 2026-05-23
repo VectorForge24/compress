@@ -1,4 +1,4 @@
-name: Video Compressor (Final – Download Error Fixed)
+name: Video Compressor (Stable – Fallback Bot + Artifact)
 
 on:
   workflow_dispatch:
@@ -30,6 +30,11 @@ on:
         required: false
         default: ''
 
+# Prevent parallel runs for the same user – avoids AuthKeyDuplicated
+concurrency:
+  group: compress-${{ github.event.inputs.user_id }}
+  cancel-in-progress: false
+
 jobs:
   compress:
     runs-on: ubuntu-latest
@@ -52,7 +57,7 @@ jobs:
       - name: Create output directory
         run: mkdir -p compress
 
-      # ---------- Runner specs ----------
+      # ---------- Runner specs (with Cancel button) ----------
       - name: Update Telegram with runner specs
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}
@@ -81,7 +86,7 @@ jobs:
           requests.post(f'https://api.telegram.org/bot{BOT_TOKEN}/editMessageText', json=payload)
           "
 
-      # ---------- Download (NO || true – any error is fatal) ----------
+      # ---------- Download (original working method) ----------
       - name: Download video from channel using Pyrogram
         id: download
         env:
@@ -162,7 +167,7 @@ jobs:
                   await app.stop()
 
           asyncio.run(main())
-          " 2>/tmp/download_err.log
+          "
 
       - name: Handle download failure
         if: failure() && steps.download.outcome == 'failure'
@@ -171,7 +176,7 @@ jobs:
         run: |
           LOG=$(tail -n 20 /tmp/download_err.log 2>/dev/null || echo "No log captured")
           python -c "
-          import os, requests, subprocess
+          import os, requests
           BOT_TOKEN = os.environ['BOT_TOKEN']
           CHAT_ID = os.environ['USER_CHAT_ID']
           MSG_ID = int(os.environ['MSG_ID'])
@@ -193,14 +198,12 @@ jobs:
           "
           exit 1
 
-      # ---------- Verify original.mp4 (with directory listing for debug) ----------
+      # ---------- Verify file ----------
       - name: Verify downloaded file exists
         id: verify
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
-          echo "Directory contents of compress/:"
-          ls -la compress/ || echo "compress directory missing"
           python -c "
           import os, requests, subprocess
           BOT_TOKEN = os.environ['BOT_TOKEN']
@@ -233,7 +236,7 @@ jobs:
         if: failure() && steps.verify.outcome == 'failure'
         run: exit 1
 
-      # ---------- Compression (unchanged) ----------
+      # ---------- Compression ----------
       - name: Compress video
         id: compress
         env:
@@ -282,7 +285,7 @@ jobs:
           else
             FFLOG=$(tail -n 30 /tmp/ffmpeg.log)
             python -c "
-            import os, requests, sys
+            import os, requests
             BOT_TOKEN = os.environ['BOT_TOKEN']
             CHAT_ID = os.environ['USER_CHAT_ID']
             MSG_ID = int(os.environ['MSG_ID'])
@@ -418,6 +421,7 @@ jobs:
                   if not sent_channel_msg or not hasattr(sent_channel_msg, 'id'):
                       raise Exception('Failed to send to channel')
 
+                  # Try primary bot first, then fallback
                   success = await try_copy(BOT_TOKEN, USER_CHAT_ID, channel.id,
                                            sent_channel_msg.id, ORIGINAL_MSG_ID)
                   if not success and FALLBACK_BOT_TOKEN:
@@ -450,7 +454,7 @@ jobs:
         run: |
           LOG=$(tail -n 20 /tmp/upload_err.log 2>/dev/null || echo "No log captured")
           python -c "
-          import os, requests, subprocess
+          import os, requests
           BOT_TOKEN = os.environ['BOT_TOKEN']
           CHAT_ID = os.environ['USER_CHAT_ID']
           MSG_ID = int(os.environ['MSG_ID'])

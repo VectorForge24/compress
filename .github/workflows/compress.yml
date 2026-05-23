@@ -1,4 +1,4 @@
-name: Video Compressor (Final – Simple Naming)
+name: Video Compressor (Final – Download Error Fixed)
 
 on:
   workflow_dispatch:
@@ -81,7 +81,7 @@ jobs:
           requests.post(f'https://api.telegram.org/bot{BOT_TOKEN}/editMessageText', json=payload)
           "
 
-      # ---------- Download (unchanged) ----------
+      # ---------- Download (NO || true – any error is fatal) ----------
       - name: Download video from channel using Pyrogram
         id: download
         env:
@@ -149,19 +149,20 @@ jobs:
                   msg = await app.get_messages(channel.id, FWD_MSG_ID)
                   if not msg or not msg.media:
                       update_message('❌ *Video not found in channel.*')
-                  else:
-                      await msg.download(file_name=OUTPUT_FILE, progress=progress)
-                      update_message('✅ *Download complete!*')
+                      sys.exit(1)
+                  await msg.download(file_name=OUTPUT_FILE, progress=progress)
+                  update_message('✅ *Download complete!*')
               except Exception as e:
                   with open('/tmp/download_err.log', 'w') as f:
                       import traceback
                       traceback.print_exc(file=f)
                   update_message(f'❌ *Download error:* {str(e)[:200]}')
                   sys.exit(1)
-              await app.stop()
+              finally:
+                  await app.stop()
 
           asyncio.run(main())
-          " 2>/tmp/download_err.log || true
+          " 2>/tmp/download_err.log
 
       - name: Handle download failure
         if: failure() && steps.download.outcome == 'failure'
@@ -192,12 +193,14 @@ jobs:
           "
           exit 1
 
-      # ---------- Verify original.mp4 (fixed) ----------
+      # ---------- Verify original.mp4 (with directory listing for debug) ----------
       - name: Verify downloaded file exists
         id: verify
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
+          echo "Directory contents of compress/:"
+          ls -la compress/ || echo "compress directory missing"
           python -c "
           import os, requests, subprocess
           BOT_TOKEN = os.environ['BOT_TOKEN']
@@ -230,7 +233,7 @@ jobs:
         if: failure() && steps.verify.outcome == 'failure'
         run: exit 1
 
-      # ---------- Compression (no renaming) ----------
+      # ---------- Compression (unchanged) ----------
       - name: Compress video
         id: compress
         env:
@@ -314,7 +317,7 @@ jobs:
           path: compress/compressed.mp4
           retention-days: 7
 
-      # ---------- Upload to channel + copy with fallback (uses compressed.mp4) ----------
+      # ---------- Upload to channel + copy with fallback ----------
       - name: Send to channel via user, then bot copies to user (with fallback)
         id: upload
         env:
@@ -400,7 +403,7 @@ jobs:
                   elapsed = int(end_time - COMPRESS_START)
                   mins, sec = divmod(elapsed, 60)
 
-                  # Build caption using original + quality + time
+                  # Build caption
                   if ORIGINAL_CAPTION:
                       caption = f'{ORIGINAL_CAPTION} - {QUALITY}p'
                   else:

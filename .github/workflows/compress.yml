@@ -1,4 +1,4 @@
-name: Video Compressor (Final – Persistent Cancel + Fallback)
+name: Video Compressor (Final – Simple Naming)
 
 on:
   workflow_dispatch:
@@ -52,7 +52,7 @@ jobs:
       - name: Create output directory
         run: mkdir -p compress
 
-      # ---------- Runner specs (Python – safe, persistent Cancel) ----------
+      # ---------- Runner specs ----------
       - name: Update Telegram with runner specs
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}
@@ -81,7 +81,7 @@ jobs:
           requests.post(f'https://api.telegram.org/bot{BOT_TOKEN}/editMessageText', json=payload)
           "
 
-      # ---------- Download (Python progress + persistent Cancel) ----------
+      # ---------- Download (unchanged) ----------
       - name: Download video from channel using Pyrogram
         id: download
         env:
@@ -192,7 +192,7 @@ jobs:
           "
           exit 1
 
-      # ---------- Verify file (Python – persistent Cancel) ----------
+      # ---------- Verify original.mp4 (fixed) ----------
       - name: Verify downloaded file exists
         id: verify
         env:
@@ -205,7 +205,7 @@ jobs:
           MSG_ID = int(os.environ['MSG_ID'])
           RUN_ID = os.environ['GITHUB_RUN_ID']
 
-          if not __import__('os').path.isfile('compress/original.mp4'):
+          if not os.path.isfile('compress/original.mp4'):
               text = '❌ *Verification failed: original.mp4 not found.*'
               success = False
           else:
@@ -230,7 +230,7 @@ jobs:
         if: failure() && steps.verify.outcome == 'failure'
         run: exit 1
 
-      # ---------- Compression (Python status updates) ----------
+      # ---------- Compression (no renaming) ----------
       - name: Compress video
         id: compress
         env:
@@ -255,7 +255,7 @@ jobs:
           }
           requests.post(f'https://api.telegram.org/bot{BOT_TOKEN}/editMessageText', json=payload)
           "
-          
+
           if ffmpeg -y -i compress/original.mp4 -vf "scale=-2:${QUALITY}" \
              -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k \
              compress/compressed.mp4 2>/tmp/ffmpeg.log; then
@@ -314,7 +314,7 @@ jobs:
           path: compress/compressed.mp4
           retention-days: 7
 
-      # ---------- Upload to channel + copy with fallback ----------
+      # ---------- Upload to channel + copy with fallback (uses compressed.mp4) ----------
       - name: Send to channel via user, then bot copies to user (with fallback)
         id: upload
         env:
@@ -400,7 +400,7 @@ jobs:
                   elapsed = int(end_time - COMPRESS_START)
                   mins, sec = divmod(elapsed, 60)
 
-                  # Build final caption
+                  # Build caption using original + quality + time
                   if ORIGINAL_CAPTION:
                       caption = f'{ORIGINAL_CAPTION} - {QUALITY}p'
                   else:
@@ -415,7 +415,6 @@ jobs:
                   if not sent_channel_msg or not hasattr(sent_channel_msg, 'id'):
                       raise Exception('Failed to send to channel')
 
-                  # Try primary bot first, then fallback
                   success = await try_copy(BOT_TOKEN, USER_CHAT_ID, channel.id,
                                            sent_channel_msg.id, ORIGINAL_MSG_ID)
                   if not success and FALLBACK_BOT_TOKEN:

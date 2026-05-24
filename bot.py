@@ -7,9 +7,9 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 REPO = "eartinityop/compress"
 WF_FILE = "compress.yml"
-GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
-CHANNEL_USERNAME = "eartvidcomp"   # without @
-# ------------------------------------------------------------
+# ✅ Renamed to FRONTEND_TOKEN to avoid any conflict
+FRONTEND_TOKEN = os.environ["FRONTEND_TOKEN"]   # Your GitHub PAT (repo + workflow scopes)
+CHANNEL_USERNAME = "eartvidcomp"       # Channel where you interact
 
 # ---------- Health server for Render ----------
 class HealthHandler(BaseHTTPRequestHandler):
@@ -25,7 +25,6 @@ def start_health_server():
 # -----------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Only respond in the configured channel
     if update.message.chat.username != CHANNEL_USERNAME:
         return
     await update.message.reply_text("👋 Send me a video to compress. I'll ask for quality and a custom name.")
@@ -55,10 +54,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
+    # Cancel a running workflow (uses FRONTEND_TOKEN)
     if data.startswith("cancel_run_"):
         run_id = data.split("_", 2)[2]
         url = f"https://api.github.com/repos/{REPO}/actions/runs/{run_id}/cancel"
-        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+        headers = {"Authorization": f"token {FRONTEND_TOKEN}", "Accept": "application/vnd.github+json"}
         resp = requests.post(url, headers=headers)
         if resp.status_code == 202:
             await query.edit_message_text("❌ Process cancelled by user.")
@@ -123,7 +123,7 @@ async def custom_name_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     progress_msg_id = progress_msg.message_id
 
     url = f"https://api.github.com/repos/{REPO}/actions/workflows/{WF_FILE}/dispatches"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+    headers = {"Authorization": f"token {FRONTEND_TOKEN}", "Accept": "application/vnd.github+json"}
     payload = {
         "ref": "main",
         "inputs": {

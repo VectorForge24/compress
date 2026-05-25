@@ -1,4 +1,4 @@
-name: Video Compressor (Final – Filename + Duration Fixed)
+name: Video Compressor (Final – Filename Now Works)
 
 on:
   workflow_dispatch:
@@ -114,7 +114,6 @@ jobs:
               FILLED=$(( PERCENT * BARS / 100 ))
               BAR=$(printf "%0.s█" $(seq 1 $FILLED))
               BAR+=$(printf "%0.s░" $(seq 1 $((BARS - FILLED))))
-              # Real newline with $'\n'
               TEXT="📥 Downloading... [${BAR}] ${PERCENT}%"$'\n'"(${CUR_MB} / ${TOTAL_MB} MB) ⚡ ${SPEED_MB} MB/s"
               curl -s -X POST "${BASE_URL}/bot${BOT_TOKEN}/editMessageText" \
                 -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" \
@@ -211,7 +210,6 @@ jobs:
             INPUT="compress/original.mp4"
           fi
 
-          # Sanitise custom name and use as final filename
           SAFE_NAME=$(echo "$CUSTOM_NAME" | sed 's/[^a-zA-Z0-9_\-]//g' | cut -c1-50)
           [ -z "$SAFE_NAME" ] && SAFE_NAME="video"
           FINAL_NAME="${SAFE_NAME}.mp4"
@@ -251,7 +249,7 @@ jobs:
           path: compress/${{ env.COMPRESSED_NAME }}
           retention-days: 7
 
-      - name: Send compressed file to group (reply, same bot, duration + custom filename)
+      - name: Send compressed file to group (reply, same bot, duration + custom filename FIXED)
         env:
           COMPRESSED_NAME: ${{ env.COMPRESSED_NAME }}
           COMPRESS_START: ${{ env.COMPRESS_START }}
@@ -271,10 +269,10 @@ jobs:
           CAPTION="Quality: ${QUALITY}p | Time: ${MINS}m ${SECS}s"
           [ -n "${ORIGINAL_CAPTION}" ] && CAPTION="${ORIGINAL_CAPTION} - ${CAPTION}"
 
-          # Upload using actual file name – no filename= needed
+          # ✅ FIXED: explicit MIME type + filename ensures Telegram displays the custom name
           curl -s -X POST "${BASE_URL}/bot${BOT_TOKEN}/sendVideo" \
             -F "chat_id=$CHAT_ID" \
-            -F "video=@$FILE" \
+            -F "video=@$FILE;type=video/mp4;filename=${COMPRESSED_NAME}" \
             -F "duration=$DURATION" \
             -F "supports_streaming=true" \
             -F "caption=$CAPTION" \

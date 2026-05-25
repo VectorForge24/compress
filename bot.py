@@ -135,6 +135,10 @@ async def custom_name_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     resp = requests.post(url, json=payload, headers=headers)
     if resp.status_code != 204:
         await update.message.reply_text(f"❌ Workflow trigger failed: {resp.status_code} {resp.text}")
+    
+    await asyncio.sleep(5)
+    await context.bot.delete_message(chat_id=update.message.chat_id, message_id=update.message.message_id)
+
 
 async def post_init(application: Application):
     me = await application.bot.get_me()

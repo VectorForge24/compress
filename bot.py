@@ -7,8 +7,9 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 REPO = "eartinityop/compress"
 WF_FILE = "compress.yml"
-FRONTEND_TOKEN = os.environ["FRONTEND_TOKEN"]           # your GitHub PAT
-GROUP_CHAT_ID = int(os.environ["GROUP_CHAT_ID"])       # your group's numeric ID
+FRONTEND_TOKEN = os.environ["FRONTEND_TOKEN"]               # GitHub PAT
+GROUP_CHAT_ID = int(os.environ["GROUP_CHAT_ID"])            # your group’s numeric ID
+WORKER_BOT_USERNAME = os.environ["WORKER_BOT_USERNAME"]     # without @ (e.g., "eartinitycompworker_bot")
 
 # ---------- Health server for Render ----------
 class HealthHandler(BaseHTTPRequestHandler):
@@ -31,13 +32,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def video_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.chat.id != GROUP_CHAT_ID:
         return
-
     video = update.message.video
     if not video:
         await update.message.reply_text("Please send a video file.")
         return
 
-    # Store video message ID (the worker bot will fetch this message later)
+    # 1. Forward the video to the worker bot immediately (the worker bot now has its own copy)
+    forwarded = await update.message.forward(chat_id=f"@{WORKER_BOT_USERNAME}")
+    context.user_data["worker_msg_id"] = forwarded.message_id      # message ID in worker bot’s chat
+
+    # 2. Store original group info for the reply later
     context.user_data["original_msg_id"] = update.message.message_id
     context.user_data["chat_id"] = update.message.chat.id
     context.user_data["original_caption"] = update.message.caption or ""
@@ -53,7 +57,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    # ---------- Cancel a running workflow ----------
     if data.startswith("cancel_run_"):
         run_id = data.split("_", 2)[2]
         url = f"https://api.github.com/repos/{REPO}/actions/runs/{run_id}/cancel"
@@ -62,8 +65,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if resp.status_code == 202:
             await query.edit_message_text("❌ Process cancelled by user.")
         else:
-            error_msg = resp.json().get("message", "Unknown error")
-            await query.edit_message_text(f"❌ Cancellation failed: {error_msg}")
+            await query.edit_message_text(f"❌ Cancellation failed: {resp.json().get('message')}")
         return
 
     if data == "cancel":
@@ -71,7 +73,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         return
 
-    # ---------- Show quality options ----------
     if data == "compress":
         keyboard = [
             [InlineKeyboardButton("240p", callback_data="quality_240"),
@@ -84,11 +85,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Select the desired quality:", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    # ---------- Quality selected → ask for custom name ----------
     if data.startswith("quality_"):
         quality = data.split("_")[1]
         context.user_data["quality"] = quality
-        # Store the message ID of this prompt so we can edit it later
         context.user_data["prompt_msg_id"] = query.message.message_id
         await query.edit_message_text("📝 Send a name for the compressed file (or type `skip`):")
         return
@@ -98,9 +97,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         return
 
-# ---------- Text handler for custom name ----------
 async def custom_name_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Only react in the correct group and when we're actually waiting for a name
     if update.message.chat.id != GROUP_CHAT_ID:
         return
     if "quality" not in context.user_data or "prompt_msg_id" not in context.user_data:
@@ -113,24 +110,23 @@ async def custom_name_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     custom_name = text if text.lower() != "skip" else "video"
-
-    # Delete the user's name message immediately
-    await update.message.delete()
+    await update.message.delete()        # delete user’s name message
 
     quality = context.user_data["quality"]
     original_msg_id = context.user_data["original_msg_id"]
     chat_id = context.user_data["chat_id"]
-    original_caption = context.user_data["original_caption"]
+    original_caption = context.user_data.get("original_caption", "")
     prompt_msg_id = context.user_data["prompt_msg_id"]
+    worker_msg_id = context.user_data["worker_msg_id"]        # forwarded message ID in worker bot’s chat
 
-    # Edit the prompt message to “Workflow triggered…”
+    # Edit prompt to “Workflow triggered…”
     await context.bot.edit_message_text(
         chat_id=chat_id,
         message_id=prompt_msg_id,
         text="⏳ Workflow triggered. The worker bot will update you."
     )
 
-    # Trigger the GitHub Actions workflow (pass original message ID, not file_id)
+    # Trigger the GitHub workflow
     url = f"https://api.github.com/repos/{REPO}/actions/workflows/{WF_FILE}/dispatches"
     headers = {"Authorization": f"token {FRONTEND_TOKEN}", "Accept": "application/vnd.github+json"}
     payload = {
@@ -138,6 +134,7 @@ async def custom_name_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         "inputs": {
             "chat_id": str(chat_id),
             "original_message_id": str(original_msg_id),
+            "worker_msg_id": str(worker_msg_id),
             "quality": quality,
             "custom_name": custom_name,
             "original_caption": original_caption
@@ -150,10 +147,9 @@ async def custom_name_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             message_id=prompt_msg_id,
             text=f"❌ Workflow trigger failed: {resp.status_code} {resp.text}"
         )
-        context.user_data.clear()
         return
 
-    # Wait 5 seconds, then delete the prompt message
+    # Delete the prompt after 5 seconds
     await asyncio.sleep(5)
     await context.bot.delete_message(chat_id=chat_id, message_id=prompt_msg_id)
     context.user_data.clear()
@@ -167,7 +163,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.VIDEO, video_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
-    # This handler catches text messages when we're waiting for a custom name
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, custom_name_handler))
     app.run_polling()
 

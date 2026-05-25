@@ -1,18 +1,29 @@
-name: Video Compressor (Group + Worker Bot Fetches Message)
+name: Video Compressor (Local API Worker with Forwarded Message)
 
 on:
   workflow_dispatch:
     inputs:
       chat_id:
+        description: 'Group chat ID'
         required: true
       original_message_id:
+        description: 'Original video message ID (for reply)'
+        required: true
+      worker_msg_id:
+        description: 'Forwarded message ID in worker bot chat'
+        required: true
+      frontend_bot_id:
+        description: 'Frontend bot user ID (chat between frontend and worker bot)'
         required: true
       quality:
+        description: 'Target height (240/360/480/720/1080)'
         required: true
       custom_name:
+        description: 'Custom file name'
         required: false
         default: 'video'
       original_caption:
+        description: 'Original video caption'
         required: false
         default: ''
 
@@ -26,10 +37,12 @@ jobs:
       API_ID: ${{ secrets.API_ID }}
       API_HASH: ${{ secrets.API_HASH }}
       CHAT_ID: ${{ github.event.inputs.chat_id }}
+      ORIGINAL_MSG_ID: ${{ github.event.inputs.original_message_id }}
+      WORKER_MSG_ID: ${{ github.event.inputs.worker_msg_id }}
+      FRONTEND_BOT_ID: ${{ github.event.inputs.frontend_bot_id }}
       QUALITY: ${{ github.event.inputs.quality }}
       ORIGINAL_CAPTION: ${{ github.event.inputs.original_caption }}
       CUSTOM_NAME: ${{ github.event.inputs.custom_name }}
-      ORIGINAL_MSG_ID: ${{ github.event.inputs.original_message_id }}
       BINARY_URL: "https://github.com/eartinityop/compress/releases/download/botapi-binary/telegram-bot-api-linux-amd64"
 
     steps:
@@ -44,7 +57,6 @@ jobs:
           wget -q -O telegram-bot-api "$BINARY_URL"
           chmod +x telegram-bot-api
           ./telegram-bot-api --api-id $API_ID --api-hash $API_HASH --http-port 8081 --dir /tmp/telegram-bot-api --local &
-          # Wait for server to be ready
           for i in $(seq 1 30); do
             if curl -s http://127.0.0.1:8081/getMe | grep -q '"ok":true'; then
               echo "Local API server ready."
@@ -53,25 +65,26 @@ jobs:
             sleep 1
           done
 
-      - name: Send initial progress message (worker bot)
-        id: progress_msg
+      - name: Send progress message (worker bot)
+        id: progress
         run: |
           API_URL="http://127.0.0.1:8081/bot${WORKER_BOT_TOKEN}"
-          RESPONSE=$(curl -s -X POST "$API_URL/sendMessage" \
+          RESP=$(curl -s -X POST "$API_URL/sendMessage" \
             -d "chat_id=$CHAT_ID" \
             -d "text=⏳ Processing started..." \
             -d "parse_mode=Markdown")
-          echo "PROGRESS_MSG_ID=$(echo "$RESPONSE" | jq -r '.result.message_id')" >> $GITHUB_ENV
+          echo "PROGRESS_MSG_ID=$(echo "$RESP" | jq -r '.result.message_id')" >> $GITHUB_ENV
 
-      - name: Retrieve video message and get file_id
+      - name: Retrieve video from forwarded message (worker bot)
         run: |
           API_URL="http://127.0.0.1:8081/bot${WORKER_BOT_TOKEN}"
-          # Fetch the original message
-          MSG=$(curl -s "$API_URL/getMessages?chat_id=$CHAT_ID&message_ids=$ORIGINAL_MSG_ID")
-          FILE_ID=$(echo "$MSG" | jq -r '.result.messages[0].video.file_id')
+          # Fetch the message from the private chat between frontend and worker bot
+          # The chat ID for that private chat is the frontend bot's user ID
+          MSG=$(curl -s "$API_URL/getMessage?chat_id=$FRONTEND_BOT_ID&message_id=$WORKER_MSG_ID")
+          FILE_ID=$(echo "$MSG" | jq -r '.result.video.file_id')
           if [ -z "$FILE_ID" ] || [ "$FILE_ID" = "null" ]; then
             curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" \
-              -d "text=❌ Could not retrieve video from original message." -d "parse_mode=Markdown"
+              -d "text=❌ Could not retrieve video from forwarded message." -d "parse_mode=Markdown"
             exit 1
           fi
           echo "FILE_ID=$FILE_ID" >> $GITHUB_ENV
@@ -117,13 +130,11 @@ jobs:
         run: |
           API_URL="http://127.0.0.1:8081/bot${WORKER_BOT_TOKEN}"
           if [ ! -f compress/original.mp4 ]; then
-            curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" \
-              -d "text=❌ Verification failed." -d "parse_mode=Markdown"
+            curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" -d "text=❌ Verification failed." -d "parse_mode=Markdown"
             exit 1
           fi
           SIZE=$(du -sh compress/original.mp4 | cut -f1)
-          curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" \
-            -d "text=✅ File verified (${SIZE})" -d "parse_mode=Markdown"
+          curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" -d "text=✅ File verified (${SIZE})" -d "parse_mode=Markdown"
 
       - name: Compress video
         id: compress
@@ -136,16 +147,15 @@ jobs:
           SAFE_NAME=$(echo "$CUSTOM_NAME" | sed 's/[^a-zA-Z0-9_\-]//g' | cut -c1-50)
           [ -z "$SAFE_NAME" ] && SAFE_NAME="video"
           FINAL_NAME="${SAFE_NAME}_${QUALITY}p.mp4"
+          echo "COMPRESSED_NAME=${FINAL_NAME}" >> $GITHUB_ENV
 
           if ffmpeg -y -i compress/original.mp4 -vf "scale=-2:${QUALITY}" -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k "compress/${FINAL_NAME}" 2>/tmp/ffmpeg.log; then
-            echo "COMPRESSED_NAME=${FINAL_NAME}" >> $GITHUB_ENV
             curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" \
               -d "text=✅ Compressed successfully!" -d "parse_mode=Markdown"
           else
-            FFLOG=$(tail -n 20 /tmp/ffmpeg.log)
-            ESCAPED=$(echo "$FFLOG" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+            FFLOG=$(tail -n 20 /tmp/ffmpeg.log | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
             curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" \
-              -d "text=❌ Compression failed! \`\`\`${ESCAPED}\`\`\`" -d "parse_mode=Markdown"
+              -d "text=❌ Compression failed! \`\`\`${FFLOG}\`\`\`" -d "parse_mode=Markdown"
             exit 1
           fi
 
@@ -156,7 +166,7 @@ jobs:
           path: compress/${{ env.COMPRESSED_NAME }}
           retention-days: 7
 
-      - name: Send compressed video to group (reply)
+      - name: Send compressed file to group (as reply)
         env:
           COMPRESSED_NAME: ${{ env.COMPRESSED_NAME }}
           COMPRESS_START: ${{ env.COMPRESS_START }}

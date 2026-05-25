@@ -1,4 +1,4 @@
-name: Video Compressor (Channel + Local API, No Session)
+name: Video Compressor (Group + Local API)
 
 on:
   workflow_dispatch:
@@ -6,14 +6,11 @@ on:
       file_id:
         description: 'Telegram file_id of the video'
         required: true
-      channel_id:
-        description: 'Channel chat ID (where to send results & updates)'
+      chat_id:
+        description: 'Group chat ID (where to send results & updates)'
         required: true
       quality:
         description: 'Target height (240/360/480/720/1080)'
-        required: true
-      message_id:
-        description: 'Progress message ID to update'
         required: true
       original_message_id:
         description: 'Original video message ID (for reply)'
@@ -36,8 +33,7 @@ jobs:
       WORKER_BOT_TOKEN: ${{ secrets.WORKER_BOT_TOKEN }}
       API_ID: ${{ secrets.API_ID }}
       API_HASH: ${{ secrets.API_HASH }}
-      CHANNEL_ID: ${{ github.event.inputs.channel_id }}
-      MSG_ID: ${{ github.event.inputs.message_id }}
+      CHAT_ID: ${{ github.event.inputs.chat_id }}
       QUALITY: ${{ github.event.inputs.quality }}
       ORIGINAL_CAPTION: ${{ github.event.inputs.original_caption }}
       CUSTOM_NAME: ${{ github.event.inputs.custom_name }}
@@ -48,12 +44,12 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y ffmpeg jq bc python3-pip
 
-      - name: Download and set up local Bot API server
+      - name: Download and start local Bot API server
         run: |
           wget -q -O telegram-bot-api "$BINARY_URL"
           chmod +x telegram-bot-api
           ./telegram-bot-api --api-id $API_ID --api-hash $API_HASH --http-port 8081 --dir /tmp/telegram-bot-api --local &
-          # Wait until the server is ready (responds to getMe)
+          # Wait for the server to be ready
           for i in $(seq 1 30); do
             if curl -s http://127.0.0.1:8081/getMe | grep -q '"ok":true'; then
               echo "Local API server ready."
@@ -65,21 +61,29 @@ jobs:
       - name: Create output directory
         run: mkdir -p compress
 
-      - name: Download video via local Bot API (progress every 10s)
+      # ---------- Send initial progress message (worker bot) ----------
+      - name: Send progress message (worker bot)
+        id: progress_msg
         run: |
           API_URL="http://127.0.0.1:8081/bot${WORKER_BOT_TOKEN}"
-          # Get file path
+          RESPONSE=$(curl -s -X POST "$API_URL/sendMessage" \
+            -d "chat_id=$CHAT_ID" \
+            -d "text=⏳ Processing started..." \
+            -d "parse_mode=Markdown")
+          echo "PROGRESS_MSG_ID=$(echo "$RESPONSE" | jq -r '.result.message_id')" >> $GITHUB_ENV
+
+      # ---------- Download video (progress every 10s) ----------
+      - name: Download video via local Bot API
+        run: |
+          API_URL="http://127.0.0.1:8081/bot${WORKER_BOT_TOKEN}"
           FILE_PATH=$(curl -s "$API_URL/getFile?file_id=${{ github.event.inputs.file_id }}" | jq -r '.result.file_path')
           if [ -z "$FILE_PATH" ] || [ "$FILE_PATH" = "null" ]; then
-            echo "Failed to get file path"
-            curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHANNEL_ID" -d "message_id=$MSG_ID" -d "text=❌ Failed to get file path." -d "parse_mode=Markdown"
+            curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" -d "text=❌ Failed to get file path." -d "parse_mode=Markdown"
             exit 1
           fi
-          # Download with progress (update every 10 seconds)
           OUTPUT="compress/original.mp4"
           curl -# -L -o "$OUTPUT" "$API_URL/file/$FILE_PATH" 2>/tmp/download_progress.txt &
           CURL_PID=$!
-          LAST_SIZE=0
           while kill -0 $CURL_PID 2>/dev/null; do
             sleep 10
             if [ -f "$OUTPUT" ]; then
@@ -97,30 +101,29 @@ jobs:
               FILLED=$(( PERCENT * BARS / 100 ))
               BAR=$(printf "%0.s█" $(seq 1 $FILLED))
               BAR+=$(printf "%0.s░" $(seq 1 $((BARS - FILLED))))
-              curl -s -X POST "$API_URL/editMessageText" \
-                -d "chat_id=$CHANNEL_ID" -d "message_id=$MSG_ID" \
-                -d "text=📥 Downloading... [${BAR}] ${PERCENT}%\n(${CUR_MB} / ${TOTAL_MB} MB)" \
-                -d "parse_mode=Markdown"
+              curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" \
+                -d "text=📥 Downloading... [${BAR}] ${PERCENT}%\n(${CUR_MB} / ${TOTAL_MB} MB)" -d "parse_mode=Markdown"
             fi
           done
           wait $CURL_PID
-          curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHANNEL_ID" -d "message_id=$MSG_ID" -d "text=✅ Download complete!" -d "parse_mode=Markdown"
+          curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" -d "text=✅ Download complete!" -d "parse_mode=Markdown"
 
       - name: Verify download
         run: |
+          API_URL="http://127.0.0.1:8081/bot${WORKER_BOT_TOKEN}"
           if [ ! -f compress/original.mp4 ]; then
-            curl -s -X POST "http://127.0.0.1:8081/bot${WORKER_BOT_TOKEN}/editMessageText" -d "chat_id=$CHANNEL_ID" -d "message_id=$MSG_ID" -d "text=❌ Verification failed." -d "parse_mode=Markdown"
+            curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" -d "text=❌ Verification failed." -d "parse_mode=Markdown"
             exit 1
           fi
           SIZE=$(du -sh compress/original.mp4 | cut -f1)
-          curl -s -X POST "http://127.0.0.1:8081/bot${WORKER_BOT_TOKEN}/editMessageText" -d "chat_id=$CHANNEL_ID" -d "message_id=$MSG_ID" -d "text=✅ File verified (${SIZE})" -d "parse_mode=Markdown"
+          curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" -d "text=✅ File verified (${SIZE})" -d "parse_mode=Markdown"
 
       - name: Compress video
         id: compress
         run: |
-          echo "COMPRESS_START=$(date +%s)" >> $GITHUB_ENV
           API_URL="http://127.0.0.1:8081/bot${WORKER_BOT_TOKEN}"
-          curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHANNEL_ID" -d "message_id=$MSG_ID" -d "text=🎞 Compressing to ${QUALITY}p..." -d "parse_mode=Markdown"
+          curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" -d "text=🎞 Compressing to ${QUALITY}p..." -d "parse_mode=Markdown"
+          echo "COMPRESS_START=$(date +%s)" >> $GITHUB_ENV
 
           SAFE_NAME=$(echo "$CUSTOM_NAME" | sed 's/[^a-zA-Z0-9_\-]//g' | cut -c1-50)
           [ -z "$SAFE_NAME" ] && SAFE_NAME="video"
@@ -128,25 +131,24 @@ jobs:
 
           if ffmpeg -y -i compress/original.mp4 -vf "scale=-2:${QUALITY}" -c:v libx264 -preset fast -crf 23 -c:a aac -b:a 128k "compress/${FINAL_NAME}" 2>/tmp/ffmpeg.log; then
             echo "COMPRESSED_NAME=${FINAL_NAME}" >> $GITHUB_ENV
-            curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHANNEL_ID" -d "message_id=$MSG_ID" -d "text=✅ Compressed successfully!" -d "parse_mode=Markdown"
+            curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" -d "text=✅ Compressed successfully!" -d "parse_mode=Markdown"
           else
             FFLOG=$(tail -n 20 /tmp/ffmpeg.log)
             ESCAPED=$(echo "$FFLOG" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
-            curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHANNEL_ID" -d "message_id=$MSG_ID" -d "text=❌ Compression failed! \`\`\`${ESCAPED}\`\`\`" -d "parse_mode=Markdown"
+            curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" -d "text=❌ Compression failed! \`\`\`${ESCAPED}\`\`\`" -d "parse_mode=Markdown"
             exit 1
           fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: compressed-${{ github.event.inputs.channel_id }}-${{ github.event.inputs.message_id }}
+          name: compressed-${{ github.event.inputs.chat_id }}-${{ github.run_id }}
           path: compress/${{ env.COMPRESSED_NAME }}
           retention-days: 7
 
-      - name: Upload compressed video to channel (as reply)
+      - name: Send compressed video to group (reply)
         env:
           COMPRESSED_NAME: ${{ env.COMPRESSED_NAME }}
-          ORIGINAL_MSG_ID: ${{ github.event.inputs.original_message_id }}
           COMPRESS_START: ${{ env.COMPRESS_START }}
         run: |
           API_URL="http://127.0.0.1:8081/bot${WORKER_BOT_TOKEN}"
@@ -161,17 +163,16 @@ jobs:
           [ -n "${ORIGINAL_CAPTION}" ] && CAPTION="${ORIGINAL_CAPTION} - ${CAPTION}"
 
           curl -s -X POST "$API_URL/sendVideo" \
-            -F "chat_id=$CHANNEL_ID" \
+            -F "chat_id=$CHAT_ID" \
             -F "video=@$FILE" \
             -F "caption=$CAPTION" \
             -F "reply_to_message_id=$ORIGINAL_MSG_ID" \
             -F "parse_mode=Markdown" > /tmp/send_resp.json
 
           if grep -q '"ok":true' /tmp/send_resp.json; then
-            # Delete the progress message
-            curl -s -X POST "$API_URL/deleteMessage" -d "chat_id=$CHANNEL_ID" -d "message_id=$MSG_ID"
+            curl -s -X POST "$API_URL/deleteMessage" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID"
           else
             ERROR=$(jq -r '.description' /tmp/send_resp.json)
-            curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHANNEL_ID" -d "message_id=$MSG_ID" -d "text=❌ Upload failed: $ERROR" -d "parse_mode=Markdown"
+            curl -s -X POST "$API_URL/editMessageText" -d "chat_id=$CHAT_ID" -d "message_id=$PROGRESS_MSG_ID" -d "text=❌ Upload failed: $ERROR" -d "parse_mode=Markdown"
             exit 1
           fi

@@ -5,8 +5,9 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-REPO = "eartinityop/compress"
+REPO = "VectorForge24/compress"
 WF_FILE = "compress.yml"
+COMPILE_WF_FILE = "build_botapi_binary.yml"
 FRONTEND_TOKEN = os.environ["FRONTEND_TOKEN"]   # GitHub PAT
 
 # ---------- Health server for Render ----------
@@ -147,6 +148,36 @@ async def custom_name_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     await context.bot.delete_message(chat_id=chat_id, message_id=prompt_msg_id)
     context.user_data.clear()
 
+async def compile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat.type != "private":
+        return
+
+    status_msg = await update.message.reply_text(
+        "⚡ Recompiling the Telegram Bot API..."
+    )
+
+    url = f"https://api.github.com/repos/{REPO}/actions/workflows/{COMPILE_WF_FILE}/dispatches"
+
+    headers = {
+        "Authorization": f"token {FRONTEND_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    payload = {
+        "ref": "main",
+        "inputs": {
+            "chat_id": str(update.effective_chat.id),
+            "status_message_id": str(status_msg.message_id)
+        }
+    }
+
+    resp = requests.post(url, json=payload, headers=headers)
+
+    if resp.status_code != 204:
+        await status_msg.edit_text(
+            f"❌ Failed to trigger compile workflow.\n{resp.status_code}"
+        )
+
 async def post_init(application: Application):
     me = await application.bot.get_me()
     print(f"Bot @{me.username} ready.")
@@ -154,6 +185,7 @@ async def post_init(application: Application):
 def main():
     app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("compile", compile_cmd))
     app.add_handler(MessageHandler(filters.VIDEO, video_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, custom_name_handler))

@@ -1,13 +1,24 @@
 name: Build Telegram Bot API Binary
 
 on:
-  workflow_dispatch:          # you can trigger this manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      chat_id:
+        required: true
+        type: string
 
+      status_message_id:
+        required: true
+        type: string
+        
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  
     steps:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y git cmake g++ libssl-dev zlib1g-dev libc-ares-dev gperf
@@ -32,3 +43,29 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify success
+        if: success()
+        run: |
+          curl -s -X POST \
+            "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" \
+            -d "chat_id=${{ inputs.chat_id }}" \
+            -d "message_id=${{ inputs.status_message_id }}"
+
+          curl -s -X POST \
+            "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${{ inputs.chat_id }}" \
+            -d "text=Telegram Bot API compiled successfully 🎉"
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          curl -s -X POST \
+            "https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage" \
+            -d "chat_id=${{ inputs.chat_id }}" \
+            -d "message_id=${{ inputs.status_message_id }}"
+
+          curl -s -X POST \
+            "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${{ inputs.chat_id }}" \
+            -d "text=❌ Telegram Bot API compilation failed."

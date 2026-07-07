@@ -41,7 +41,6 @@ jobs:
       ORIGINAL_MSG_ID: ${{ github.event.inputs.original_message_id }}
       QUALITY: ${{ github.event.inputs.quality }}
       CUSTOM_NAME: ${{ github.event.inputs.custom_name }}
-      URL: ${{ steps.create_release.outputs.url }}
       BINARY_URL: "https://github.com/eartinityop/compress/releases/download/botapi-binary/telegram-bot-api-linux-amd64"
 
     steps:
@@ -268,7 +267,7 @@ jobs:
             compress/thumb.jpg
 
       - name: Upload to releases
-        id: v1
+        id: release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.custom_name }}
@@ -279,17 +278,20 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          URL: ${{ steps.create_release.outputs.url }}
-
-      - name: Echo the release URL
+          
+      - name: Store the release URL
         run: |
-          echo $URL
+          echo "URL=${{ steps.release.outputs.url }}" >> $GITHUB_ENV
 
+      - name: Build asset URL
+        run: |
+          URL="https://github.com/${{ github.repository }}/releases/download/${{ inputs.custom_name }}/${{ inputs.custom_name }}.mp4"
+          echo "URL=$URL" >> $GITHUB_ENV
+      
       - name: Send compressed file to group (reply, same bot, caption fixed, thumbnail)
         env:
           COMPRESSED_NAME: ${{ env.COMPRESSED_NAME }}
           COMPRESS_START: ${{ env.COMPRESS_START }}
-          URL: ${{ steps.create_release.outputs.url }}
         run: |
           BASE_URL="http://127.0.0.1:8081"
           FILE="compress/${COMPRESSED_NAME}"

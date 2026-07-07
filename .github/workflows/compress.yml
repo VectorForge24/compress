@@ -267,7 +267,7 @@ jobs:
       - name: Check compressed file
         run: |
           echo ${COMPRESSED_NAME}
-          cd /compress && ls
+          cd compress && ls
     
       - name: Upload to releases
         uses: softprops/action-gh-release@v2

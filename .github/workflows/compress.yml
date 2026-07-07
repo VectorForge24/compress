@@ -267,6 +267,7 @@ jobs:
             compress/thumb.jpg
 
       - name: Upload to releases
+        id: v1
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.custom_name }}
@@ -277,6 +278,10 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Map the release URL
+        run: |
+          URL: ${{ steps.create_release.outputs.url }}
 
       - name: Send compressed file to group (reply, same bot, caption fixed, thumbnail)
         env:
@@ -297,7 +302,7 @@ jobs:
           SECS=$(( ELAPSED % 60 ))
 
           # ✅ Only custom name, no original caption
-          CAPTION="${COMPRESSED_NAME} | Quality: ${QUALITY}p | Time: ${MINS}m ${SECS}s | Download: https://github.com/VectorForge24/compress/releases/download/${{ inputs.custom_name }}/${COMPRESSED_NAME}"
+          CAPTION="${COMPRESSED_NAME} | Quality: ${QUALITY}p | Time: ${MINS}m ${SECS}s | Download: $URL"
 
           curl -s -X POST "${BASE_URL}/bot${BOT_TOKEN}/sendVideo" \
             -F "chat_id=$CHAT_ID" \

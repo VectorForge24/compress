@@ -43,7 +43,7 @@ jobs:
 
     steps:
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg jq bc python3-pip pv
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg jq zip bc python3-pip pv
 
       - name: Create working directory
         run: mkdir -p /tmp/telegram-bot-api compress && echo "FILE_ID=${{ github.event.inputs.file_id }}"
@@ -264,14 +264,21 @@ jobs:
             -vf "scale=320:-1" \
             compress/thumb.jpg
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Compress the files to zip
+        run: |
+          zip -j compress/output.zip compress/thumb.jpg compress/${{ env.COMPRESSED_NAME }}
+    
+      - name: Upload to releases
+        uses: softprops/action-gh-release@v2
         with:
-          name: compressed-${{ github.event.inputs.chat_id }}-${{ github.run_id }}
-          path: |
-            compress/${{ env.COMPRESSED_NAME }}
-            compress/thumb.jpg
-          retention-days: 7
+          tag_name: ${{ inputs.custom_name }}
+          name: "${{ inputs.custom_name }}"
+          body: "Compressed ${{ inputs.custom_name }} to ${{ inputs.quality }}p"
+          files: compress/output.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Send compressed file to group (reply, same bot, caption fixed, thumbnail)
         env:

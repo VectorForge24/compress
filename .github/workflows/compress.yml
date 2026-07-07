@@ -263,10 +263,6 @@ jobs:
             -vframes 1 \
             -vf "scale=320:-1" \
             compress/thumb.jpg
-
-      - name: Compress the files to zip
-        run: |
-          zip -j compress/output.zip compress/thumb.jpg compress/${{ env.COMPRESSED_NAME }}
     
       - name: Upload to releases
         uses: softprops/action-gh-release@v2
@@ -274,7 +270,7 @@ jobs:
           tag_name: ${{ inputs.custom_name }}
           name: "${{ inputs.custom_name }}"
           body: "Compressed ${{ inputs.custom_name }} to ${{ inputs.quality }}p"
-          files: compress/output.zip
+          files: compress/${COMPRESSED_NAME}
           draft: false
           prerelease: false
         env:
@@ -299,7 +295,7 @@ jobs:
           SECS=$(( ELAPSED % 60 ))
 
           # ✅ Only custom name, no original caption
-          CAPTION="${COMPRESSED_NAME} | Quality: ${QUALITY}p | Time: ${MINS}m ${SECS}s"
+          CAPTION="${COMPRESSED_NAME} | Quality: ${QUALITY}p | Time: ${MINS}m ${SECS}s | Download: https://github.com/VectorForge24/compress/releases/download/${{ inputs.custom_name }}/${COMPRESSED_NAME}"
 
           curl -s -X POST "${BASE_URL}/bot${BOT_TOKEN}/sendVideo" \
             -F "chat_id=$CHAT_ID" \

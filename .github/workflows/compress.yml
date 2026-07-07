@@ -29,6 +29,8 @@ on:
 jobs:
   compress:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     timeout-minutes: 180
 
     env:

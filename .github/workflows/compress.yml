@@ -279,14 +279,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Map the release URL
-        run: |
-          URL: ${{ steps.create_release.outputs.url }}
-
       - name: Send compressed file to group (reply, same bot, caption fixed, thumbnail)
         env:
           COMPRESSED_NAME: ${{ env.COMPRESSED_NAME }}
           COMPRESS_START: ${{ env.COMPRESS_START }}
+          URL: ${{ steps.create_release.outputs.url }}
         run: |
           BASE_URL="http://127.0.0.1:8081"
           FILE="compress/${COMPRESSED_NAME}"
@@ -302,7 +299,7 @@ jobs:
           SECS=$(( ELAPSED % 60 ))
 
           # ✅ Only custom name, no original caption
-          CAPTION="${COMPRESSED_NAME} | Quality: ${QUALITY}p | Time: ${MINS}m ${SECS}s | Download: $URL"
+          CAPTION="${COMPRESSED_NAME} | Quality: ${QUALITY}p | Time: ${MINS}m ${SECS}s | Download: ${URL}"
 
           curl -s -X POST "${BASE_URL}/bot${BOT_TOKEN}/sendVideo" \
             -F "chat_id=$CHAT_ID" \

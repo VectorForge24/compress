@@ -264,18 +264,13 @@ jobs:
             -vf "scale=320:-1" \
             compress/thumb.jpg
 
-      - name: Check compressed file
-        run: |
-          echo ${COMPRESSED_NAME}
-          cd compress && ls
-    
       - name: Upload to releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.custom_name }}
           name: "${{ inputs.custom_name }}"
           body: "Compressed ${{ inputs.custom_name }} to ${{ inputs.quality }}p"
-          files: compress/${COMPRESSED_NAME}.mp4
+          files: compress/${{ inputs.custom_name }}.mp4
           draft: false
           prerelease: false
         env:
